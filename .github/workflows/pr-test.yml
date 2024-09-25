@@ -187,7 +187,6 @@ jobs:
           cd test/srt
           python3 -m unittest test_bench_latency.TestBenchLatency.test_moe_default
 
-
   accuracy-test-1-gpu:
     if: github.repository == 'sgl-project/sglang' || github.event_name == 'pull_request'
     runs-on: 1-gpu-runner
@@ -228,11 +227,24 @@ jobs:
           cd human-eval
           pip install -e .
 
-      - name: Evaluate Accuracy
+      - name: Evaluate Accuracy (TP=2)
         timeout-minutes: 20
         run: |
           cd test/srt
           python3 test_moe_eval_accuracy_large.py
+      
+      - name: Evaluate MLA Accuracy (TP=2)
+        timeout-minutes: 10
+        run: |
+          cd test/srt
+          python3 test_mla.py
+          python3 test_mla_fp8.py
+
+      - name: Evaluate Data Parallelism Accuracy (TP=2)
+        timeout-minutes: 10
+        run: |
+          cd test/srt
+          python3 test_data_parallelism.py
 
   finish:
     needs: [

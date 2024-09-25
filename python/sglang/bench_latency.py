@@ -64,8 +64,13 @@ from sglang.srt.hf_transformers_utils import get_tokenizer
 from sglang.srt.managers.schedule_batch import Req, ScheduleBatch
 from sglang.srt.model_executor.model_runner import ModelRunner
 from sglang.srt.sampling.sampling_params import SamplingParams
+from sglang.srt.server import _set_envs_and_config
 from sglang.srt.server_args import ServerArgs
-from sglang.srt.utils import kill_child_process, suppress_other_loggers
+from sglang.srt.utils import (
+    configure_logger,
+    kill_child_process,
+    suppress_other_loggers,
+)
 
 
 @dataclasses.dataclass
@@ -255,7 +260,7 @@ def correctness_test(
 
     # Decode
     output_ids = [input_ids[i] + [next_token_ids[i]] for i in range(len(input_ids))]
-    for _ in range(bench_args.output_len[0]):
+    for _ in range(bench_args.output_len[0] - 1):
         next_token_ids, _ = decode(next_token_ids, batch, model_runner)
         for i in range(len(reqs)):
             output_ids[i].append(next_token_ids[i])
@@ -306,7 +311,7 @@ def latency_test_run_once(
 
     # Decode
     decode_latencies = []
-    for i in range(output_len):
+    for i in range(output_len - 1):
         torch.cuda.synchronize()
         tic = time.time()
         next_token_ids, _ = decode(next_token_ids, batch, model_runner)
@@ -341,6 +346,8 @@ def latency_test(
     bench_args,
     tp_rank,
 ):
+    configure_logger(server_args, prefix=f" TP{tp_rank}")
+    _set_envs_and_config(server_args)
     rank_print = print if tp_rank == 0 else lambda *args, **kwargs: None
 
     # Load the model
@@ -484,18 +491,10 @@ def main(server_args, bench_args):
 
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method("spawn", force=True)
-
     parser = argparse.ArgumentParser()
     ServerArgs.add_cli_args(parser)
     BenchArgs.add_cli_args(parser)
-    # For this script, model-path is not required
-    assert (
-        parser._actions[1].option_strings[0] == "--model-path"
-    ), "options changed, this code need to be updated"
-    parser._actions[1].required = False
     args = parser.parse_args()
-
     server_args = ServerArgs.from_cli_args(args)
     bench_args = BenchArgs.from_cli_args(args)
 
@@ -503,6 +502,8 @@ if __name__ == "__main__":
         level=getattr(logging, server_args.log_level.upper()),
         format="%(message)s",
     )
+
+    multiprocessing.set_start_method("spawn", force=True)
 
     try:
         main(server_args, bench_args)
