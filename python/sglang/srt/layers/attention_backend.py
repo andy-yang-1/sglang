@@ -346,9 +346,7 @@ class TritonAttnBackend(AttentionBackend):
 
         self.decode_attention_fwd = decode_attention_fwd
         self.extend_attention_fwd = extend_attention_fwd
-        self.num_head = (
-            model_runner.model_config.num_attention_heads // model_runner.tp_size
-        )
+        self.num_head = model_runner.model_config.num_attention_heads
 
         if global_server_args_dict.get("triton_attention_reduce_in_fp32", False):
             self.reduce_dtype = torch.float32
@@ -494,13 +492,24 @@ class DoubleSparseAttnBackend(AttentionBackend):
         from sglang.srt.layers.triton_attention.sparse_decode_attention import (
             decode_sparse_attention_fwd
         )
+        from sglang.srt.layers.triton_attention.sparse_flash_decode_attention import (
+            flash_decode_sparse_attention_fwd,
+            flash_decode_attention_fwd
+        )
+        # from sglang.srt.layers.triton_attention.flash_decode_attention import (
+        #     flash_decode_attention_fwd,
+        # )
 
         super().__init__()
 
-        self.decode_attention_fwd = decode_attention_fwd
-        self.decode_sparse_attention_fwd = decode_sparse_attention_fwd
+        self.decode_attention_fwd = flash_decode_attention_fwd
+        self.decode_sparse_attention_fwd = flash_decode_sparse_attention_fwd
         self.extend_attention_fwd = extend_attention_fwd
         self.num_head = model_runner.model_config.num_attention_heads
+        self.head_dim = model_runner.model_config.hidden_size // self.num_head
+        self.heavy_token_num = model_runner.server_args.ds_heavy_token_num
+        # TODO: Change the hard-coded block_seq_num
+        self.BLOCK_SEQ = 128
 
         if global_server_args_dict.get("triton_attention_reduce_in_fp32", False):
             self.reduce_dtype = torch.float32
@@ -528,16 +537,42 @@ class DoubleSparseAttnBackend(AttentionBackend):
             )
 
             max_seq_len = torch.max(input_metadata.seq_lens).item()
+            min_seq_len = torch.min(input_metadata.seq_lens).item()
             max_extend_len = None
             #NOTE: Align sequence order with req_to_token order
             ds_req_to_token = input_metadata.req_to_token_pool.req_to_token[input_metadata.req_pool_indices]
+            
+            bsz = input_metadata.seq_lens.shape[0]
+            
+            att_out_approx = torch.empty(
+                [self.num_head, bsz, max_seq_len],
+                dtype=self.reduce_dtype,
+                device="cuda",
+            )
+            
+            block_seq_num = (self.heavy_token_num + self.BLOCK_SEQ - 1) // self.BLOCK_SEQ
+
+            mid_out = torch.empty(
+                [bsz, self.num_head, block_seq_num, self.head_dim],
+                dtype=torch.float32,
+                device="cuda"
+            )
+            mid_o_logexpsum = torch.empty(
+                [bsz, self.num_head, block_seq_num], 
+                dtype=torch.float32, 
+                device="cuda"
+            )
+            input_metadata.att_out_approx = att_out_approx
+            input_metadata.mid_out = mid_out
+            input_metadata.mid_o_logexpsum = mid_o_logexpsum
+            
         else:
-            start_loc = attn_logits = max_seq_len = None
+            start_loc = attn_logits = max_seq_len = min_seq_len = None
             prefix_lens = torch.tensor(batch.prefix_lens_cpu, device="cuda")
             max_extend_len = torch.max(input_metadata.seq_lens - prefix_lens).item()
             ds_req_to_token = None
 
-        self.forward_metadata = start_loc, attn_logits, max_seq_len, max_extend_len, ds_req_to_token
+        self.forward_metadata = start_loc, attn_logits, max_seq_len, min_seq_len, max_extend_len, ds_req_to_token
 
     def init_cuda_graph_state(self, max_bs: int):
         #TODO(Andy): Support CUDA graph for double sparse attention
@@ -588,7 +623,7 @@ class DoubleSparseAttnBackend(AttentionBackend):
             layer.layer_id, input_metadata.out_cache_loc, k, v, k_label
         )
 
-        start_loc, attn_logits, max_seq_len, max_extend_len, ds_req_to_token = self.forward_metadata
+        start_loc, attn_logits, max_seq_len, min_seq_len, max_extend_len, ds_req_to_token = self.forward_metadata
         self.extend_attention_fwd(
             q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
             k.contiguous(),
@@ -618,7 +653,8 @@ class DoubleSparseAttnBackend(AttentionBackend):
         else:
             o = torch.empty_like(q)
 
-        start_loc, attn_logits, max_seq_len, max_extend_len, ds_req_to_token = self.forward_metadata
+        # TODO: Add min seqlen
+        start_loc, attn_logits, max_seq_len, min_seq_len, max_extend_len, ds_req_to_token = self.forward_metadata
         
         k_label = torch.gather(k, 2, input_metadata.sorted_channels[layer.layer_id].unsqueeze(0).expand(k.shape[0], -1, -1))
 
@@ -628,7 +664,7 @@ class DoubleSparseAttnBackend(AttentionBackend):
         
         # NOTE(Andy) shouldn't be used when max_len_in_batch < heavy_token_num
         #            and set a minimum value for sparse_decode
-        if max_seq_len < input_metadata.heavy_token_num or max_seq_len < input_metadata.sparse_decode_thresold:
+        if min_seq_len < input_metadata.heavy_token_num or max_seq_len < input_metadata.sparse_decode_thresold:
             self.decode_attention_fwd(
                 q.view(-1, layer.tp_q_head_num, layer.qk_head_dim),
                 input_metadata.token_to_kv_pool.get_key_buffer(layer.layer_id),
@@ -659,6 +695,10 @@ class DoubleSparseAttnBackend(AttentionBackend):
                 layer.scaling,
                 layer.logit_cap,
                 input_metadata.heavy_token_num,
+                input_metadata.att_out_approx,
+                input_metadata.mid_out,
+                input_metadata.mid_o_logexpsum,
+                self.BLOCK_SEQ
             )
         
         return o

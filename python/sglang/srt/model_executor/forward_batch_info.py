@@ -93,6 +93,9 @@ class InputMetadata:
     sorted_channels: List[torch.Tensor] = None
     heavy_token_num: int = 256
     sparse_decode_thresold: int = 4096
+    att_out_approx: torch.Tensor=None
+    mid_out: torch.Tensor=None
+    mid_o_logexpsum: torch.Tensor=None
 
     def init_multimuldal_info(self, batch: ScheduleBatch):
         reqs = batch.reqs

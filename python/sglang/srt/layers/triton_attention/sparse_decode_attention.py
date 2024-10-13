@@ -389,6 +389,7 @@ def decode_sparse_attention_fwd(
     
     # TODO(Andy): Profile each stage and optimize the process
     
+    # TODO(Andy): Fill -inf inside first stage kernel
     #initialize att_out_approx = -inf
     att_out_approx = torch.full(
         (head, batch, max_len_in_batch), float("-inf"), device=q.device, dtype=REDUCE_TORCH_TYPE
@@ -413,6 +414,7 @@ def decode_sparse_attention_fwd(
         Req_to_tokens.unsqueeze(0).expand(head, -1, -1), 2, topk_token_indices
     ) 
     # B_SeqLen_topk = [l if l < heavy_token_num else heavy_token_num for l in B_Seqlen]
+    # TODO(Andy): Apply sparse decoding when min > heavy_token_num and max > sparse decoding threshold
     B_SeqLen_topk = torch.minimum(B_Seqlen, torch.tensor(heavy_token_num, device=B_Seqlen.device))
     
     
