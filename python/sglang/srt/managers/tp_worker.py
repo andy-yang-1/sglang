@@ -48,6 +48,10 @@ class TpModelWorker:
         # Parse args
         self.tp_rank = tp_rank
 
+        # self.step_cnt = 0
+        # self.step_times = []
+        # self.record_path = "/home/andy/tmp/offline_serving_exp/wildchat_mmlu_short_openvid_30000_0.5_0.0007_step_times.jsonl"
+
         # Init model and tokenizer
         self.model_config = ModelConfig(
             server_args.model_path,
@@ -196,9 +200,21 @@ class TpModelWorker:
         return self.future_logits_output_dict.pop(future_obj)
 
     def forward_batch_generation(self, model_worker_batch: ModelWorkerBatch):
+        # print(f"forward_batch_generation step:{self.step_cnt}")
+        # self.step_cnt += 1
+        # start_time = time.time()
+        # torch.cuda.synchronize()
         forward_batch = ForwardBatch.init_new(model_worker_batch, self.model_runner)
         logits_output = self.model_runner.forward(forward_batch)
         next_token_ids = self.model_runner.sample(logits_output, model_worker_batch)
+        # torch.cuda.synchronize()
+        # end_time = time.time()
+        # self.step_times.append(end_time - start_time)
+        # if self.step_cnt % 100 == 0:
+        #     # write last 100 step times to file
+        #     with open(self.record_path, "a") as f:
+        #         f.write(json.dumps(self.step_times) + "\n")
+        #     self.step_times = []
         return logits_output, next_token_ids
 
     def forward_batch_embedding(self, model_worker_batch: ModelWorkerBatch):

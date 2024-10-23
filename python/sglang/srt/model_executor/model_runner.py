@@ -21,6 +21,7 @@ import importlib.resources
 import json
 import logging
 import pkgutil
+import time
 from functools import lru_cache
 from typing import Optional, Type
 
@@ -93,6 +94,10 @@ class ModelRunner:
         self.is_multimodal_model = is_multimodal_model(
             self.model_config.hf_config.architectures
         )
+
+        self.step_cnt = 0
+        # self.step_records = []
+        self.record_path = "/home/andy/tmp/offline_serving_exp/wildchat_mmlu_short_openvid_30000_0.5_0.0007_dfs_step_records.jsonl"
 
         # Model-specific adjustment
         if (
@@ -549,20 +554,80 @@ class ModelRunner:
         if self.cuda_graph_runner and self.cuda_graph_runner.can_run(
             forward_batch.batch_size
         ):
-            return self.cuda_graph_runner.replay(forward_batch)
+
+            print(f"forward decode step:{self.step_cnt}")
+            self.step_cnt += 1
+            start_time = time.time()
+            torch.cuda.synchronize()
+
+            out = self.cuda_graph_runner.replay(forward_batch)
+
+            torch.cuda.synchronize()
+            end_time = time.time()
+            step_record = {
+                "step": self.step_cnt,
+                "gemm_bsz": forward_batch.batch_size,
+                "memory": torch.sum(forward_batch.seq_lens).item(),
+                "time": end_time - start_time,
+            }
+
+            with open(self.record_path, "a") as f:
+                f.write(json.dumps(step_record) + "\n")
+
+            return out
 
         forward_batch.positions = (forward_batch.seq_lens - 1).to(torch.int64)
         self.attn_backend.init_forward_metadata(forward_batch)
-        return self.model.forward(
+
+        print(f"forward decode step:{self.step_cnt}")
+        self.step_cnt += 1
+        start_time = time.time()
+        torch.cuda.synchronize()
+
+        out = self.model.forward(
             forward_batch.input_ids, forward_batch.positions, forward_batch
         )
+
+        torch.cuda.synchronize()
+        end_time = time.time()
+        step_record = {
+            "step": self.step_cnt,
+            "gemm_bsz": forward_batch.batch_size,
+            "memory": torch.sum(forward_batch.seq_lens).item(),
+            "time": end_time - start_time,
+        }
+
+        with open(self.record_path, "a") as f:
+            f.write(json.dumps(step_record) + "\n")
+
+        return out
 
     def forward_extend(self, forward_batch: ForwardBatch):
         self.attn_backend.init_forward_metadata(forward_batch)
         if self.is_generation:
-            return self.model.forward(
+
+            print(f"forward prefill step:{self.step_cnt}")
+            self.step_cnt += 1
+            start_time = time.time()
+            torch.cuda.synchronize()
+
+            out = self.model.forward(
                 forward_batch.input_ids, forward_batch.positions, forward_batch
             )
+
+            torch.cuda.synchronize()
+            end_time = time.time()
+            step_record = {
+                "step": self.step_cnt,
+                "gemm_bsz": torch.sum(forward_batch.seq_lens).item(),
+                "memory": torch.sum(forward_batch.seq_lens).item(),
+                "time": end_time - start_time,
+            }
+
+            with open(self.record_path, "a") as f:
+                f.write(json.dumps(step_record) + "\n")
+
+            return out
         else:
             # Only embedding models have get_embedding parameter
             return self.model.forward(
