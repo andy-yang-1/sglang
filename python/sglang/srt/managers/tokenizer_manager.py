@@ -433,10 +433,11 @@ class TokenizerManager:
 
     def _validate_input_length(self, input_ids: List[int]):
         if len(input_ids) >= self.context_len:
-            raise ValueError(
-                f"The input ({len(input_ids)} tokens) is longer than the "
-                f"model's context length ({self.context_len} tokens)."
-            )
+            input_ids = input_ids[: self.context_len - 5]
+            # raise ValueError(
+            #     f"The input ({len(input_ids)} tokens) is longer than the "
+            #     f"model's context length ({self.context_len} tokens)."
+            # )
 
     def _get_sampling_params(self, sampling_params_data: dict):
         sampling_params = SamplingParams(**sampling_params_data)
